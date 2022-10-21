@@ -50,6 +50,15 @@ namespace FastMember
         /// <remarks>The accessor is cached internally; a pre-existing accessor may be returned</remarks>
         public static TypeAccessor Create(Type type, bool allowNonPublicAccessors)
         {
+            return Create(type, allowNonPublicAccessors, typeNameFunc: null);
+        }
+
+        /// <summary>
+        /// Provides a type-specific accessor, allowing by-name access for all objects of that type
+        /// </summary>
+        /// <remarks>The accessor is cached internally; a pre-existing accessor may be returned</remarks>
+        public static TypeAccessor Create(Type type, bool allowNonPublicAccessors, Func<int, string> typeNameFunc)
+        {
             if (type == null) throw new ArgumentNullException("type");
             var lookup = allowNonPublicAccessors ? nonPublicAccessors : publicAccessorsOnly;
             TypeAccessor obj = (TypeAccessor)lookup[type];
@@ -61,12 +70,57 @@ namespace FastMember
                 obj = (TypeAccessor)lookup[type];
                 if (obj != null) return obj;
 
-                obj = CreateNew(type, allowNonPublicAccessors);
+                if (typeNameFunc == null)
+                {
+                    typeNameFunc = nextCounter =>
+                    {
+                        return $"{type.Name}_{nextCounter}";
+                    };
+                }
+
+                obj = CreateNew(type, allowNonPublicAccessors, typeNameFunc);
 
                 lookup[type] = obj;
                 return obj;
             }
         }
+
+        public static void Reset(string typeName)
+        {
+            Reset(typeName, allowNonPublicAccessors: false);
+        }
+
+        public static void Reset(string typeName, bool allowNonPublicAccessors)
+        {
+            var lookup = allowNonPublicAccessors
+                ? nonPublicAccessors
+                : publicAccessorsOnly;
+
+            typeName = $"FastMember_dynamic.{typeName}";
+
+            var typesToRemove = new List<object>();
+
+            foreach (var key in lookup.Keys)
+            {
+                var value = lookup[key];
+
+                if (!value.GetType().FullName.Equals(typeName))
+                {
+                    continue;
+                }
+
+                typesToRemove.Add(key);
+            }
+
+            foreach (var type in typesToRemove)
+            {
+                lookup.Remove(type);
+            }
+
+            assembly = null;
+            module = null;
+        }
+
         sealed class DynamicAccessor : TypeAccessor
         {
             public static readonly DynamicAccessor Singleton = new DynamicAccessor();
@@ -298,7 +352,7 @@ namespace FastMember
 
             return true;
         }
-        static TypeAccessor CreateNew(Type type, bool allowNonPublicAccessors)
+        static TypeAccessor CreateNew(Type type, bool allowNonPublicAccessors, Func<int, string> typeNameFunc)
         {
             if (typeof(IDynamicMetaObjectProvider).IsAssignableFrom(type))
             {
@@ -351,11 +405,18 @@ namespace FastMember
             if (assembly == null)
             {
                 AssemblyName name = new AssemblyName("FastMember_dynamic");
-                assembly = AssemblyBuilder.DefineDynamicAssembly(name, AssemblyBuilderAccess.Run);
+                assembly = AssemblyBuilder.DefineDynamicAssembly(name, AssemblyBuilderAccess.RunAndCollect);
                 module = assembly.DefineDynamicModule(name.Name);
             }
             TypeAttributes attribs = typeof(TypeAccessor).Attributes;
-            TypeBuilder tb = module.DefineType("FastMember_dynamic." + type.Name + "_" + GetNextCounterValue(),
+
+            var nextCounterValue = GetNextCounterValue();
+
+            var typeName = typeNameFunc(nextCounterValue);
+
+            typeName = $"FastMember_dynamic.{typeName}";
+
+            TypeBuilder tb = module.DefineType(typeName,
                 (attribs | TypeAttributes.Sealed | TypeAttributes.Public) & ~(TypeAttributes.Abstract | TypeAttributes.NotPublic), typeof(RuntimeTypeAccessor));
 
             il = tb.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, new[] {
